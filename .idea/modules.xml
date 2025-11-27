@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/SolarTcpWiFiBms.iml" filepath="$PROJECT_DIR$/SolarTcpWiFiBms.iml" />
+      <module fileurl="file://$PROJECT_DIR$/solarTcpWiFiBms.iml" filepath="$PROJECT_DIR$/solarTcpWiFiBms.iml" />
     </modules>
   </component>
 </project>
