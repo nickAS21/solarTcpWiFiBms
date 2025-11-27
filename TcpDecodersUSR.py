@@ -18,13 +18,22 @@ BYTE1_ERROR_MAP = {
 # 200800 == 2099200 - критичне + перезаряд
 # 000000 - ок f"1.4) error_code: Error_Byte_Valid"
 BYTE2_ERROR_MAP = {
-    0x08: "OVER_CHARGE_PROTECTION", # 8 => 00001000 (Based on 200800 example)
-    0x04: "CELL_UNBALANCE",         # 4 => 00000100 (Part of 07)
-    0x02: "UNDER_VOLTAGE_CELL",     # 2 => 00000010 (Part of 07)
-    0x01: "OVER_VOLTAGE_CELL",      # 1 => 00000001 (Part of 07)
+    0x08: "CRITICALLY_LOW_CHARGE (<18%)",   # 8 => 00001000 (Based on 200800 example)
+    0x04: "CELL_UNBALANCE",                 # 4 => 00000100 (Part of 07)
+    0x02: "UNDER_VOLTAGE_CELL",             # 2 => 00000010 (Part of 07)
+    0x01: "OVER_VOLTAGE_CELL",              # 1 => 00000001 (Part of 07)
     # 0x07 = 0x04 | 0x02 | 0x01 (Assuming 'перезаряд' is the combination)
     # Add other specific flags here if known...
 }
+
+# --- BALANCE STATUS CONSTANTS (in mV) ---
+class BalanceThresholds:
+    """Defines the maximum delta_mV for each status level."""
+    EXCELLENT_MAX = 10  # 0 mV – 10 mV
+    GOOD_MAX = 20       # 10 mV – 20 mV
+    WARN_MAX = 50       # 20 mV – 50 mV
+    CRITICAL_MAX = 80   # 50 mV – 80 mV
+    # > 80 mV is considered Dangerous/Emergency Shutdown
 
 # ======================================================================
 #   ERROR CODE DECODING UTILITY
@@ -71,7 +80,7 @@ def decode_c1_payload(payload_bytes):
     # payload_bytes: WITHOUT "AA55", WITHOUT ID_IDENT (len 19), WITHOUT CRC (len 2)
     # cells_data_all [40] = len [1], cntCells [1], V_Cells [32], cellsLast [6] {
     #                                                                               cellsInfo [3] {
-    #                                                                                               cellsInfoState [2], cellsTemp [1]
+    #                                                                                               cellsInfoState [2], cellsSoc [1]
     #                                                                                              }
     #                                                                               cellsError [3] {decode_error_flags()}
     #                                                                          }
@@ -101,10 +110,10 @@ def decode_c1_payload(payload_bytes):
         cells_last = cells_data_all[cells_info_start:]
         cells_error_code_start = 3
         cells_info = cells_last[: cells_error_code_start]
-        cells_temp_start = 2
-        cells_temp_f = cells_info[cells_temp_start]
-        cells_temp_f_dec = int(cells_temp_f)
-        cells_temp_c = (cells_temp_f_dec - 32) * 5 / 9
+        cells_soc_start = 2
+        cells_soc = cells_info[cells_soc_start]
+        # cells_temp_f_dec = int(cells_temp_f)
+        # cells_temp_c = (cells_temp_f_dec - 32) * 5 / 9
         cells_info_hex = binascii.hexlify(cells_info).decode().upper()
         cells_error_code = cells_last[cells_error_code_start:]
         cells_error_code_hex = binascii.hexlify(cells_error_code).decode().upper()
@@ -145,10 +154,7 @@ def decode_c1_payload(payload_bytes):
         min_mV = min(voltages_mV)
         max_mV = max(voltages_mV)
         delta_mV = max_mV - min_mV
-
-        # поріг
-        delta_limit = 100
-        balance = "Balance - OK" if delta_mV <= delta_limit else "Unbalance"
+        balance = get_balance_status(delta_mV)
 
         # ---------------- SUM / MIN/MAX / DELTA + MIN/MAX CELL INDEX ----------------
         sum_mV = sum(voltages_mV)
@@ -158,20 +164,39 @@ def decode_c1_payload(payload_bytes):
         idx_max = voltages_mV.index(max_mV) + 1
 
         # ФОРМАТ: Ver: XXYY
-        output.append(
-            f"1.3) Ver: V{major_version:02}{minor_version:02} SUM_V = {sum_V:.2f} V Temp = {cells_temp_c:.2f} °C "
-            f"Cell{idx_min}_MIN={min_mV/1000:.3f} V "
-            f"Cell{idx_max}_MAX={max_mV/1000:.3f} V "
-            f"DELTA={delta_mV/1000:.3f} V "
-            f"{balance}"
-        )
+        # Assuming the following variables are already calculated:
+        # major_version, minor_version, sum_V, cells_soc,
+        # idx_min, min_mV, idx_max, max_mV, delta_mV, balance
+
+        # --- New Table Formatting ---
+
+        # 1. Start the table output
+        output.append("1.3) Cells Info Table:")
+
+        # 2. Add Table Headers (Adjust padding for alignment)
+        output.append("# | Name             | Value")
+        output.append("--|------------------|------------")
+
+        # 3. Add Data Rows
+        # Row 1: Version
+        output.append(f"1 | Ver:             | V{major_version:02}{minor_version:02}")
+        # Row 2: SOC
+        output.append(f"2 | SOC:             | {cells_soc} %")
+        # Row 3: SUM_V
+        output.append(f"3 | SUM_V:           | {sum_V:.2f} V")
+        # Row 4: Minimum Cell Voltage
+        output.append(f"4 | Cell{idx_min:02d}_MIN:      | {min_mV/1000:.3f} V")
+        # Row 5: Maximum Cell Voltage
+        output.append(f"5 | Cell{idx_max:02d}_MAX:      | {max_mV/1000:.3f} V")
+        # Row 6: Delta Voltage
+        output.append(f"6 | DELTA:           | {delta_mV/1000:.3f} V")
+        # Row 7: Balance Status
+        output.append(f"7 | Balance:         | {balance}")
 
         # ---------------- 1.4 ----------------
         error_value = int.from_bytes(cells_error_code, byteorder='big', signed=False)
         if error_value == 0:
-            output.append(
-                f"1.4) error_code: Error_Byte_Valid"
-            )
+            output.append(f"8 | error_code:      | Error_Byte_Valid")
         else:
             # 1. Decode the error bits
             decoded_errors = decode_error_flags(error_value)
@@ -184,13 +209,13 @@ def decode_c1_payload(payload_bytes):
             # 3. Add the detailed error messages
             status_list.append(f"Decoded_Errors: {', '.join(decoded_errors)}")
 
-            output.append(
-                f"1.4) error_code: Error_Byte_Invalid (Details: {status_list})"
-            )
+            output.append(f"8 | error_code:      | Error_Byte_Invalid (Details: {status_list}")
+
+        output.append(" ")
 
         # ---------------- 1.5 Таблиця ----------------
-        output.append("1.5) Cells Table:")
-        output.append("#\tHEX\tmV\tV")
+        output.append("1.4) Cells Table:")
+        output.append("#\tHEX     mV      V")
 
         for i in range(cells_cnt):
             vb = cells_data[i*2 : i*2 + 2]
@@ -273,3 +298,27 @@ def decode_a2_payload(payload_bytes):
 
     # ФОРМАТ: Ver: XXYY
     return f"\nVer: V{major_version:02}{minor_version:02}\n"
+
+def get_balance_status(delta_mV: int) -> str:
+    """
+    Determines the cell balance status based on the voltage difference (V_max - V_min).
+
+    Args:
+        delta_mV: The maximum voltage difference between cells in millivolts (mV).
+
+    Returns:
+        A string indicating the detailed balance status (English only).
+    """
+    if delta_mV < 0:
+        return "ERROR - Invalid delta_mV (must be non-negative)"
+
+    if delta_mV <= BalanceThresholds.EXCELLENT_MAX:
+        return "Balance - Excellent"
+    elif delta_mV <= BalanceThresholds.GOOD_MAX:
+        return "Balance - Good"
+    elif delta_mV <= BalanceThresholds.WARN_MAX:
+        return "Balance - Warning"
+    elif delta_mV <= BalanceThresholds.CRITICAL_MAX:
+        return "Balance - Critical"
+    else:
+        return "Balance - Dangerous, Emergency Shutdown"

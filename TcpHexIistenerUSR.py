@@ -4,8 +4,8 @@ import os
 import sys
 import binascii
 
-from tcp_crc_utilities_USR import check_packet_crc
-from tcp_decoders_USR import decode_c1_payload, decode_c0_payload, decode_a2_payload
+from TcpCrcUtilitiesUSR import check_packet_crc
+from TcpDecodersUSR import decode_c1_payload, decode_c0_payload, decode_a2_payload
 
 # TCP port to listen on
 # --- DEFAULT PORT CONSTANT ---
@@ -14,7 +14,7 @@ DEFAULT_PORT = 8898
 
 # Check number of arguments
 # sys.argv is a list of arguments, where:
-# sys.argv[0] = script name ('tcp_hex_listener_USR.py')
+# sys.argv[0] = script name ('TcpHexIistenerUSR.py')
 
 if len(sys.argv) == 1:
     # Case 1: No argument provided (run as: python3 script.py)
@@ -39,7 +39,7 @@ elif len(sys.argv) == 2:
 
 else:
     # Case 3: Too many arguments
-    print("Usage: python3 tcp_hex_listener_USR.py [<port_number>]")
+    print("Usage: python3 TcpHexIistenerUSR.py [<port_number>]")
     os._exit(1)
 
 # --- CONFIGURATION ---
@@ -115,7 +115,7 @@ def write_to_type_log(type_frame_hex, payload_hex, payload_bytes, crc_status_mes
 
     # ADD CRC INFORMATION
     if crc_status_message:
-        log_line += "\n" + crc_status_message
+        log_line += "\n" + crc_status_message + "\n"
 
     # Write to file
     with open(file_path, 'a', encoding='utf-8') as f:
