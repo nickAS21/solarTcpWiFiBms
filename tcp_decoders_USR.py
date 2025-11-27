@@ -1,12 +1,80 @@
 import binascii
 
 # ======================================================================
+#   ERROR DECODING MAPS (Based on AoBo/Custom Protocol)
+# ======================================================================
+
+# Byte 1 (MSB, bits 23-16) - Critical/General Flags
+# Keys are the bitmask values
+BYTE1_ERROR_MAP = {
+    0x20: "CRITICAL_FAULT",
+    0x01: "GENERAL_WARNING",
+    # Add other general flags here if known...
+}
+
+# Byte 2 (Middle, bits 15-8) - Specific Error Flags
+# Keys are the bitmask values
+# 200700 == 2098944 - критичне + перезаряд + розбаланс
+# 200800 == 2099200 - критичне + перезаряд
+# 000000 - ок f"1.4) error_code: Error_Byte_Valid"
+BYTE2_ERROR_MAP = {
+    0x08: "OVER_CHARGE_PROTECTION", # 8 => 00001000 (Based on 200800 example)
+    0x04: "CELL_UNBALANCE",         # 4 => 00000100 (Part of 07)
+    0x02: "UNDER_VOLTAGE_CELL",     # 2 => 00000010 (Part of 07)
+    0x01: "OVER_VOLTAGE_CELL",      # 1 => 00000001 (Part of 07)
+    # 0x07 = 0x04 | 0x02 | 0x01 (Assuming 'перезаряд' is the combination)
+    # Add other specific flags here if known...
+}
+
+# ======================================================================
+#   ERROR CODE DECODING UTILITY
+# ======================================================================
+
+def decode_error_flags(error_code_int: int) -> list:
+    """
+    Decodes the 3-byte error code (e.g., 0x200700) using predefined maps.
+
+    Args:
+        error_code_int: The 3-byte error code as an integer.
+
+    Returns:
+        A list of human-readable error messages.
+    """
+    messages = []
+
+    # Extract the 3 bytes
+    byte1 = (error_code_int >> 16) & 0xFF
+    byte2 = (error_code_int >> 8) & 0xFF
+    # byte3 is ignored for now
+
+    # --- Decode Byte 1 (Critical/General) ---
+    for bit_mask, description in BYTE1_ERROR_MAP.items():
+        if byte1 & bit_mask:
+            messages.append(f"{description} (0x{bit_mask:02X})")
+
+    # --- Decode Byte 2 (Specific Errors) ---
+    for bit_mask, description in BYTE2_ERROR_MAP.items():
+        if byte2 & bit_mask:
+            messages.append(f"{description} (0x{bit_mask:02X})")
+
+    # Handle unknown non-zero codes
+    if not messages and error_code_int != 0:
+        messages.append(f"UNKNOWN_ERROR_CODE (0x{error_code_int:06X})")
+
+    return messages
+
+# ======================================================================
 #   Decoder for TYPE C1 (BMS CELL VOLTAGES)
 # ======================================================================
 
 def decode_c1_payload(payload_bytes):
     # payload_bytes: WITHOUT "AA55", WITHOUT ID_IDENT (len 19), WITHOUT CRC (len 2)
-
+    # cells_data_all [40] = len [1], cntCells [1], V_Cells [32], cellsLast [6] {
+    #                                                                               cellsInfo [3] {
+    #                                                                                               cellsInfoState [2], cellsTemp [1]
+    #                                                                                              }
+    #                                                                               cellsError [3] {decode_error_flags()}
+    #                                                                          }
     try:
         if len(payload_bytes) < 2:
             return "\n--- ERROR C1: payload bad len ---\n"
@@ -105,9 +173,17 @@ def decode_c1_payload(payload_bytes):
                 f"1.4) error_code: Error_Byte_Valid"
             )
         else:
+            # 1. Decode the error bits
+            decoded_errors = decode_error_flags(error_value)
+
+            # 2. Build the output list
             status_list = []
             status_list.append(f"Balance_Status: {balance}")
-            status_list.append(f"Error_Flag_Set: {cells_error_code_hex}")
+            status_list.append(f"Error_Code_HEX: {cells_error_code_hex}")
+
+            # 3. Add the detailed error messages
+            status_list.append(f"Decoded_Errors: {', '.join(decoded_errors)}")
+
             output.append(
                 f"1.4) error_code: Error_Byte_Invalid (Details: {status_list})"
             )
