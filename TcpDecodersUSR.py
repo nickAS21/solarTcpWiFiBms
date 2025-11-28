@@ -4,11 +4,23 @@ import binascii
 #   ERROR DECODING MAPS (Based on AoBo/Custom Protocol)
 # ======================================================================
 
+# Maximum cycle count to 80% SOH level, declared by the manufacturer (GS Energy GBL2.45K3 (SYL Battery) = 6000 - 40000 cycles
+BMS_LIFEPO4_CYCLES_TO_80_SOH = 6000
+
+# The percentage (SOH) at which the battery is considered end-of-life
+SOH_TERMINAL_PERCENT = 80
+
+# The total SOH percentage range lost before reaching EOL (100% - 80% = 20%)
+SOH_DEGRADATION_RANGE = 100 - SOH_TERMINAL_PERCENT  # 20
+
+# Calculation of SOH loss per single cycle (using a linear model)
+SOH_LOSS_PER_CYCLE = SOH_DEGRADATION_RANGE / BMS_LIFEPO4_CYCLES_TO_80_SOH
+
 # Byte 1 (MSB, bits 23-16) - Critical/General Flags
 # Keys are the bitmask values
 BYTE1_ERROR_MAP = {
     0x20: "CRITICAL_FAULT",
-    0x01: "GENERAL_WARNING",
+    0x10: "WARNING: STATE AFTER CRITICAL...",
     # Add other general flags here if known...
 }
 
@@ -163,6 +175,10 @@ def decode_c1_payload(payload_bytes):
         cells_info = cells_last[: cells_error_code_start]
         cells_soc_start = 2
         cells_soc = cells_info[cells_soc_start]
+        # Life Cycles [0, 2]
+        cells_life_cycles_count = cells_info[:cells_soc_start]
+        cells_life_cycles_count_int = int.from_bytes(cells_life_cycles_count, "big")
+        cells_soh = round(100 - (cells_life_cycles_count_int * SOH_LOSS_PER_CYCLE))
         cells_info_hex = binascii.hexlify(cells_info).decode().upper()
 
         # 3 байти коду помилки для C1
@@ -216,19 +232,20 @@ def decode_c1_payload(payload_bytes):
 
         output.append("1.3) Cells Info Table:")
 
-        output.append("# | Name             | Value")
-        output.append("--|------------------|------------")
-
-        output.append(f"1 | Ver:             | V{major_version:02}{minor_version:02}")
-        output.append(f"2 | SOC:             | {cells_soc} %")
-        output.append(f"3 | SUM_V:           | {sum_V:.2f} V")
-        output.append(f"4 | Cell{idx_min:02d}_MIN:      | {min_mV/1000:.3f} V")
-        output.append(f"5 | Cell{idx_max:02d}_MAX:      | {max_mV/1000:.3f} V")
-        output.append(f"6 | DELTA:           | {delta_mV/1000:.3f} V")
-        output.append(f"7 | Balance:         | {balance}")
+        output.append("#  | Name             | Value")
+        output.append("---|------------------|------------")
+        output.append(f"1  | Ver:             | V{major_version:02}{minor_version:02}")
+        output.append(f"2  | Life Cycles:     | {cells_life_cycles_count_int}")
+        output.append(f"3  | SOC:             | {cells_soc} %")
+        output.append(f"4  | SOH:             | {cells_soh:.0f} %")
+        output.append(f"5  | SUM_V:           | {sum_V:.2f} V")
+        output.append(f"6  | Cell{idx_min:02d}_MIN:      | {min_mV/1000:.3f} V")
+        output.append(f"7  | Cell{idx_max:02d}_MAX:      | {max_mV/1000:.3f} V")
+        output.append(f"8  | DELTA:           | {delta_mV/1000:.3f} V")
+        output.append(f"9  | Balance:         | {balance}")
 
         # 4. Error Code (3 байти) - Рядок 8
-        error_output = format_error_code_output(cells_error_code, 8)
+        error_output = format_error_code_output(cells_error_code, 10)
         output.append(error_output)
 
         output.append(" ")
