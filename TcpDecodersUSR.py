@@ -14,63 +14,119 @@ BYTE1_ERROR_MAP = {
 
 # Byte 2 (Middle, bits 15-8) - Specific Error Flags
 # Keys are the bitmask values
-# 200700 == 2098944 - критичне + перезаряд + розбаланс
-# 200800 == 2099200 - критичне + перезаряд
-# 000000 - ок f"1.4) error_code: Error_Byte_Valid"
 BYTE2_ERROR_MAP = {
-    0x08: "CRITICALLY_LOW_CHARGE (<18%)",   # 8 => 00001000 (Based on 200800 example)
-    0x04: "CELL_UNBALANCE",                 # 4 => 00000100 (Part of 07)
-    0x02: "UNDER_VOLTAGE_CELL",             # 2 => 00000010 (Part of 07)
-    0x01: "OVER_VOLTAGE_CELL",              # 1 => 00000001 (Part of 07)
-    # 0x07 = 0x04 | 0x02 | 0x01 (Assuming 'перезаряд' is the combination)
+    0x08: "CRITICALLY_LOW_CHARGE (<18%)",
+    0x04: "CELL_UNBALANCE",
+    0x02: "UNDER_VOLTAGE_CELL",
+    0x01: "OVER_VOLTAGE_CELL",
     # Add other specific flags here if known...
 }
 
 # --- BALANCE STATUS CONSTANTS (in mV) ---
 class BalanceThresholds:
     """Defines the maximum delta_mV for each status level."""
-    EXCELLENT_MAX = 10  # 0 mV – 10 mV
-    GOOD_MAX = 20       # 10 mV – 20 mV
-    WARN_MAX = 50       # 20 mV – 50 mV
-    CRITICAL_MAX = 80   # 50 mV – 80 mV
+    EXCELLENT_MAX = 10
+    GOOD_MAX = 20
+    WARN_MAX = 50
+    CRITICAL_MAX = 80
     # > 80 mV is considered Dangerous/Emergency Shutdown
 
 # ======================================================================
-#   ERROR CODE DECODING UTILITY
+#   UTILITY FUNCTIONS (Defined FIRST)
 # ======================================================================
 
 def decode_error_flags(error_code_int: int) -> list:
     """
     Decodes the 3-byte error code (e.g., 0x200700) using predefined maps.
-
-    Args:
-        error_code_int: The 3-byte error code as an integer.
-
-    Returns:
-        A list of human-readable error messages.
     """
     messages = []
-
-    # Extract the 3 bytes
     byte1 = (error_code_int >> 16) & 0xFF
     byte2 = (error_code_int >> 8) & 0xFF
-    # byte3 is ignored for now
 
-    # --- Decode Byte 1 (Critical/General) ---
     for bit_mask, description in BYTE1_ERROR_MAP.items():
         if byte1 & bit_mask:
             messages.append(f"{description} (0x{bit_mask:02X})")
 
-    # --- Decode Byte 2 (Specific Errors) ---
     for bit_mask, description in BYTE2_ERROR_MAP.items():
         if byte2 & bit_mask:
             messages.append(f"{description} (0x{bit_mask:02X})")
 
-    # Handle unknown non-zero codes
     if not messages and error_code_int != 0:
         messages.append(f"UNKNOWN_ERROR_CODE (0x{error_code_int:06X})")
 
     return messages
+
+
+def get_balance_status(delta_mV: int) -> str:
+    """
+    Determines the cell balance status based on the voltage difference (V_max - V_min).
+    """
+    if delta_mV < 0:
+        return "ERROR - Invalid delta_mV (must be non-negative)"
+
+    if delta_mV <= BalanceThresholds.EXCELLENT_MAX:
+        return "Excellent"
+    elif delta_mV <= BalanceThresholds.GOOD_MAX:
+        return "Good"
+    elif delta_mV <= BalanceThresholds.WARN_MAX:
+        return "Warning"
+    elif delta_mV <= BalanceThresholds.CRITICAL_MAX:
+        return "Critical"
+    else:
+        return "Dangerous, Emergency Shutdown"
+
+
+def decode_bms_status(status_int: int) -> list:
+    """
+    Decodes the 2-byte BMS status integer into human-readable flags.
+    """
+    bit_status_map = {
+        1: "Charging",
+        2: "Discharging",
+        3: "Static",
+    }
+    result = []
+    for bit_index, name in bit_status_map.items():
+        mask = 1 << (bit_index - 1)
+        if status_int & mask:
+            result.append(name)
+
+    return result if result else ["None"]
+
+
+def format_error_code_output(cells_error_code: bytes, number: int) -> str:
+    """
+    Форматує рядок для виведення коду помилки та його деталей (рядок X).
+    """
+    error_value = int.from_bytes(cells_error_code, byteorder='big', signed=False)
+    cells_error_code_hex = binascii.hexlify(cells_error_code).decode().upper()
+
+    if error_value == 0:
+        details = "Byte_Valid"
+    else:
+        decoded_errors = decode_error_flags(error_value)
+
+        details_list = [f"Error_Code_HEX: {cells_error_code_hex}"]
+        details_list.append(f"Decoded_Errors: {', '.join(decoded_errors)}")
+
+        details = f"Byte_Invalid (Details: {'; '.join(details_list)})"
+
+    return f"{number} | Error_Code:      | {details}"
+
+
+def decode_a2_payload(payload_bytes):
+    # payload_bytes: WITHOUT "AA55", WITHOUT ID_IDENT (len 19), WITHOUT CRC (len 2)
+    # Expected 2 bytes (0C 10)
+    if len(payload_bytes) != 2:
+        return "\n--- Error A2: Incorrect data length ---"
+
+    # 0C10
+    major_version = payload_bytes[-2]
+    minor_version = payload_bytes[-1]
+
+    # ФОРМАТ: Ver: XXYY
+    return f"\nVer: V{major_version:02}{minor_version:02}\n"
+
 
 # ======================================================================
 #   Decoder for TYPE C1 (BMS CELL VOLTAGES)
@@ -78,17 +134,12 @@ def decode_error_flags(error_code_int: int) -> list:
 
 def decode_c1_payload(payload_bytes):
     # payload_bytes: WITHOUT "AA55", WITHOUT ID_IDENT (len 19), WITHOUT CRC (len 2)
-    # cells_data_all [40] = len [1], cntCells [1], V_Cells [32], cellsLast [6] {
-    #                                                                               cellsInfo [3] {
-    #                                                                                               cellsInfoState [2], cellsSoc [1]
-    #                                                                                              }
-    #                                                                               cellsError [3] {decode_error_flags()}
-    #                                                                          }
+
     try:
         if len(payload_bytes) < 2:
             return "\n--- ERROR C1: payload bad len ---\n"
 
-        cells_all_len = payload_bytes[0]     # byte[0] — len payload_cells (Expected 40)
+        cells_all_len = payload_bytes[0]
         cells_cnt = payload_bytes[1]
         cells_len = cells_cnt * 2
         if cells_all_len != 40:
@@ -112,17 +163,16 @@ def decode_c1_payload(payload_bytes):
         cells_info = cells_last[: cells_error_code_start]
         cells_soc_start = 2
         cells_soc = cells_info[cells_soc_start]
-        # cells_temp_f_dec = int(cells_temp_f)
-        # cells_temp_c = (cells_temp_f_dec - 32) * 5 / 9
         cells_info_hex = binascii.hexlify(cells_info).decode().upper()
+
+        # 3 байти коду помилки для C1
         cells_error_code = cells_last[cells_error_code_start:]
         cells_error_code_hex = binascii.hexlify(cells_error_code).decode().upper()
 
-        payload_last = payload_bytes[cells_all_len:]          # all last after payload_cells_len
+        payload_last = payload_bytes[cells_all_len:]
         payload_last_hex = binascii.hexlify(payload_last).decode().upper()
-        # 0C10/0C0C
-        major_version = payload_last[-2]  # 0C -> 12 (Dec)
-        minor_version = payload_last[-1]  # 10 -> 16 (Dec)
+        major_version = payload_last[-2]
+        minor_version = payload_last[-1]
 
         # -------------------------------------------------------------
         # FORM OUTPUT
@@ -130,13 +180,12 @@ def decode_c1_payload(payload_bytes):
         output = []
         output.append("--- DETAILS DECODE C1 ---")
 
-        # ---------------- 1.1 ----------------
+        # ---------------- 1.1 - 1.2 (HEX/Lengths) ----------------
         output.append(
             f"1.1) payload: cells_all_len={cells_all_len} cells_cnt={cells_cnt}"
             f" cells_len: {cells_len}   cells_last_len: {len(cells_last)}"
         )
 
-        # ---------------- 1.2 ----------------
         output.append(
             f"1.2) payload: cells_data_hex: {cells_data_hex}"
             f" cells_info: {cells_info_hex}"
@@ -144,7 +193,7 @@ def decode_c1_payload(payload_bytes):
             f" payload_last_hex: {payload_last_hex}"
         )
 
-        # ---------------- 1.3 MIN/MAX/DELTA ----------------
+        # ---------------- 1.3 MIN/MAX/DELTA (Calculations) ----------------
         voltages_mV = []
         for i in range(cells_cnt):
             vb = cells_data[i*2 : i*2 + 2]
@@ -163,57 +212,28 @@ def decode_c1_payload(payload_bytes):
         idx_min = voltages_mV.index(min_mV) + 1   # 1-based index
         idx_max = voltages_mV.index(max_mV) + 1
 
-        # ФОРМАТ: Ver: XXYY
-        # Assuming the following variables are already calculated:
-        # major_version, minor_version, sum_V, cells_soc,
-        # idx_min, min_mV, idx_max, max_mV, delta_mV, balance
-
         # --- New Table Formatting ---
 
-        # 1. Start the table output
         output.append("1.3) Cells Info Table:")
 
-        # 2. Add Table Headers (Adjust padding for alignment)
         output.append("# | Name             | Value")
         output.append("--|------------------|------------")
 
-        # 3. Add Data Rows
-        # Row 1: Version
         output.append(f"1 | Ver:             | V{major_version:02}{minor_version:02}")
-        # Row 2: SOC
         output.append(f"2 | SOC:             | {cells_soc} %")
-        # Row 3: SUM_V
         output.append(f"3 | SUM_V:           | {sum_V:.2f} V")
-        # Row 4: Minimum Cell Voltage
         output.append(f"4 | Cell{idx_min:02d}_MIN:      | {min_mV/1000:.3f} V")
-        # Row 5: Maximum Cell Voltage
         output.append(f"5 | Cell{idx_max:02d}_MAX:      | {max_mV/1000:.3f} V")
-        # Row 6: Delta Voltage
         output.append(f"6 | DELTA:           | {delta_mV/1000:.3f} V")
-        # Row 7: Balance Status
         output.append(f"7 | Balance:         | {balance}")
 
-        # ---------------- 1.4 ----------------
-        error_value = int.from_bytes(cells_error_code, byteorder='big', signed=False)
-        if error_value == 0:
-            output.append(f"8 | error_code:      | Error_Byte_Valid")
-        else:
-            # 1. Decode the error bits
-            decoded_errors = decode_error_flags(error_value)
-
-            # 2. Build the output list
-            status_list = []
-            status_list.append(f"Balance_Status: {balance}")
-            status_list.append(f"Error_Code_HEX: {cells_error_code_hex}")
-
-            # 3. Add the detailed error messages
-            status_list.append(f"Decoded_Errors: {', '.join(decoded_errors)}")
-
-            output.append(f"8 | error_code:      | Error_Byte_Invalid (Details: {status_list}")
+        # 4. Error Code (3 байти) - Рядок 8
+        error_output = format_error_code_output(cells_error_code, 8)
+        output.append(error_output)
 
         output.append(" ")
 
-        # ---------------- 1.5 Таблиця ----------------
+        # ---------------- 1.4 Таблиця (Cells Table) ----------------
         output.append("1.4) Cells Table:")
         output.append("#\tHEX     mV      V")
 
@@ -239,8 +259,6 @@ def decode_c0_payload(payload_bytes):
 
     data_bytes = payload_bytes
 
-    # Expected structure: voltage_V_min(2), voltage_V_cur(2), current_A_cur(2), SOC(1), Reserve(1) Status(1), remaining_data_bytes(N)
-
     try:
 
         voltage_V_min = int.from_bytes(data_bytes[0:2], byteorder="big", signed=False) / 100      # Uint16
@@ -249,30 +267,50 @@ def decode_c0_payload(payload_bytes):
 
         soc = data_bytes[6]
 
-        status_raw  = data_bytes[8] # (9-й byte)
+        # Info and error data: від data_bytes[7:] до кінця
+        info_error_data_bytes = data_bytes[7:]
+        info_error_data_hex = binascii.hexlify(info_error_data_bytes).decode().upper()
 
-        # Remaining data: від data_bytes[8] до кінця
-        remaining_data_bytes = data_bytes[8:]
-        last_hex = binascii.hexlify(remaining_data_bytes).decode().upper()
+        # Розділення: 10 байтів info_raw + 4 байти error_raw
+        info_raw  = info_error_data_bytes[:10]
+        info_raw_hex  = binascii.hexlify(info_raw).decode().upper()
+        error_raw  = info_error_data_bytes[10:] # 4 байти коду помилки
+        error_raw_hex  = binascii.hexlify(error_raw).decode().upper()
+
+        # Розділення 10 байтів info_raw:
+        state_bms_raw  = info_raw[0:2] # 2 байти стану BMS
+        # ВИПРАВЛЕННЯ: Конвертуємо bytes у int для decode_bms_status
+        state_bms_int = int.from_bytes(state_bms_raw, byteorder="big", signed=False)
+        state_bms_raw_hex = binascii.hexlify(state_bms_raw).decode().upper()
+        state_bms_dop1_raw  = info_raw[2:6] # 4 байти
+        state_bms_dop1_raw_hex = binascii.hexlify(state_bms_dop1_raw).decode().upper()
+        state_bms_dop2_raw  = info_raw[6:] # 4 байти
+        state_bms_dop2_raw_hex = binascii.hexlify(state_bms_dop2_raw).decode().upper()
 
         output = [
             "--- DETAILS DECODE C0 (BMS General Status) ---",
-            f"1. Voltage Min (V)       : {voltage_V_min:.2f} V",
-            f"2. Voltage (V)           : {voltage_V_cur:.2f} V",
-            f"3. Current (A)           : {current_A_cur:.2f} A",
-            f"4. SOC (%)               : {soc} %",
-            f"5. Status Byte           : 0x{status_raw:02X}",
-            f"6. Remaining Data (HEX)  : {last_hex}",
-            "------------------------------------------------",
+            f"1  | Voltage Min (V)  | {voltage_V_min:.2f} V",
+            f"2  | Voltage (V)      | {voltage_V_cur:.2f} V",
+            f"3  | Current (A)      | {current_A_cur:.2f} A",
+            f"4  | SOC (%)          | {soc} %",
+            f"5  | All info Data    | {info_error_data_hex}",
+            f"6  | info Data        | {info_raw_hex}",
+            f"7  | BMS status       | 0x{state_bms_raw_hex} (2B)",
+            f"8  | BMS status1      | 0x{state_bms_dop1_raw_hex} (4B)",
+            f"9  | BMS status2      | 0x{state_bms_dop2_raw_hex} (4B)",
+            f"10 | Error info Data  | {error_raw_hex} (4B)",
         ]
 
-        status_details = []
-        if status_raw & 0x01: status_details.append("Charging...")
-        if status_raw & 0x02: status_details.append("Discharging...")
-        if status_raw & 0x04: status_details.append("Static...")
+        # Додаємо Error_Code (4 байти) - Рядок 11
+        error_output = format_error_code_output(error_raw, 11)
+        output.append(error_output)
 
+        # Декодуємо статус BMS (використовуємо state_bms_int)
+        status_details = decode_bms_status(state_bms_int)
         if status_details:
-            output.append("Status meaning: " + ", ".join(status_details))
+            output.append("12 | BMS status value | " + ", ".join(status_details))
+
+        output.append("------------------------------------------------")
 
         return "\n" + "\n".join(output) + "\n"
 
@@ -281,44 +319,64 @@ def decode_c0_payload(payload_bytes):
             "\n--- CRITICAL DECODE ERROR C0 ---\n"
             f"{e}\n"
         )
-
 # ======================================================================
-#   DECODER FOR TYPE A2 (BMS Configuration Data)
+#   DECODER FOR TYPE C0 (BMS Info Short Status)
 # ======================================================================
 
-def decode_a2_payload(payload_bytes):
+def decode_c0_bms_info_payload(payload_bytes):
     # payload_bytes: WITHOUT "AA55", WITHOUT ID_IDENT (len 19), WITHOUT CRC (len 2)
-    # Expected 2 bytes (0C 10)
-    if len(payload_bytes) != 2:
-        return "\n--- Error A2: Incorrect data length ---"
 
-    # 0C10
-    major_version = payload_bytes[-2]  # 0C -> 12 (Dec)
-    minor_version = payload_bytes[-1]  # 10 -> 16 (Dec)
+    data_bytes = payload_bytes
 
-    # ФОРМАТ: Ver: XXYY
-    return f"\nVer: V{major_version:02}{minor_version:02}\n"
+    try:
 
-def get_balance_status(delta_mV: int) -> str:
-    """
-    Determines the cell balance status based on the voltage difference (V_max - V_min).
+        voltage_V_cur = int.from_bytes(data_bytes[2:4], byteorder="big", signed=False) / 100      # Uint16
+        current_A_cur = int.from_bytes(data_bytes[4:6], "big", signed=True) / 10
 
-    Args:
-        delta_mV: The maximum voltage difference between cells in millivolts (mV).
+        soc = data_bytes[6]
 
-    Returns:
-        A string indicating the detailed balance status (English only).
-    """
-    if delta_mV < 0:
-        return "ERROR - Invalid delta_mV (must be non-negative)"
+        # Info and error data: від data_bytes[7:] до кінця
+        info_error_data_bytes = data_bytes[7:]
+        info_error_data_hex = binascii.hexlify(info_error_data_bytes).decode().upper()
 
-    if delta_mV <= BalanceThresholds.EXCELLENT_MAX:
-        return "Balance - Excellent"
-    elif delta_mV <= BalanceThresholds.GOOD_MAX:
-        return "Balance - Good"
-    elif delta_mV <= BalanceThresholds.WARN_MAX:
-        return "Balance - Warning"
-    elif delta_mV <= BalanceThresholds.CRITICAL_MAX:
-        return "Balance - Critical"
-    else:
-        return "Balance - Dangerous, Emergency Shutdown"
+        # Розділення: 10 байтів info_raw + 4 байти error_raw
+        info_raw  = info_error_data_bytes[:10]
+        info_raw_hex  = binascii.hexlify(info_raw).decode().upper()
+        error_raw  = info_error_data_bytes[10:] # 4 байти коду помилки
+        error_raw_hex  = binascii.hexlify(error_raw).decode().upper()
+
+        # Розділення 10 байтів info_raw:
+        state_bms_raw  = info_raw[0:2] # 2 байти стану BMS
+        # ВИПРАВЛЕННЯ: Конвертуємо bytes у int для decode_bms_status
+        state_bms_int = int.from_bytes(state_bms_raw, byteorder="big", signed=False)
+        state_bms_raw_hex = binascii.hexlify(state_bms_raw).decode().upper()
+        state_bms_dop1_raw  = info_raw[2:6] # 4 байти
+        state_bms_dop1_raw_hex = binascii.hexlify(state_bms_dop1_raw).decode().upper()
+        state_bms_dop2_raw  = info_raw[6:] # 4 байти
+        state_bms_dop2_raw_hex = binascii.hexlify(state_bms_dop2_raw).decode().upper()
+
+        output = [
+            "--- DETAILS DECODE C0 (BMS General Status) ---",
+            f"1 | Voltage (V)      | {voltage_V_cur:.2f} V",
+            f"3 | Current (A)      | {current_A_cur:.2f} A",
+            f"4 | SOC (%)          | {soc} %",
+        ]
+
+        # Додаємо Error_Code (4 байти) - Рядок 5
+        error_output = format_error_code_output(error_raw, 5)
+        output.append(error_output)
+
+        # Декодуємо статус BMS (використовуємо state_bms_int)
+        status_details = decode_bms_status(state_bms_int)
+        if status_details:
+            output.append("6 | BMS status value | " + ", ".join(status_details))
+
+        output.append("------------------------------------------------")
+
+        return "\n" + "\n".join(output) + "\n"
+
+    except Exception as e:
+        return (
+            "\n--- CRITICAL DECODE ERROR C0 ---\n"
+            f"{e}\n"
+        )

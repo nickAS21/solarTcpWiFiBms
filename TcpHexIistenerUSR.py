@@ -5,7 +5,7 @@ import sys
 import binascii
 
 from TcpCrcUtilitiesUSR import check_packet_crc
-from TcpDecodersUSR import decode_c1_payload, decode_c0_payload, decode_a2_payload
+from TcpDecodersUSR import decode_c1_payload, decode_c0_payload, decode_c0_bms_info_payload, decode_a2_payload
 
 # TCP port to listen on
 # --- DEFAULT PORT CONSTANT ---
@@ -63,11 +63,41 @@ ALL_LOG_FILE = os.path.join(LOG_DIR, 'all.log')
 # Dictionary to store the last Payload for each typeFrame
 last_payloads = {}
 
+# --- ГЛОБАЛЬНА ЗМІННА ДЛЯ СИСТЕМНИХ ПОВІДОМЛЕНЬ ---
+# Зберігає Created log directory, Waiting for connection
+SYSTEM_MESSAGES_PREFIX = ""
+# --- КІНЕЦЬ ГЛОБАЛЬНОЇ ЗМІННОЇ ---
+
+
 def setup_logging():
     """Creates the log directory if it doesn't exist."""
     if not os.path.exists(LOG_DIR):
         os.makedirs(LOG_DIR)
-        print(f"Created log directory: {LOG_DIR}")
+        # Вивід на консоль тепер відбувається у main()
+
+# --- НОВА ФУНКЦІЯ: Збирає початкові повідомлення у змінну ---
+def prepare_system_messages(listen_host, port):
+    """
+    Prepares the initial system messages string (directory creation and waiting).
+    Returns messages for console output.
+    """
+    global SYSTEM_MESSAGES_PREFIX
+
+    # 1. Створюємо рядок про директорію (якщо вона створюється)
+    dir_msg = ""
+    if not os.path.exists(LOG_DIR):
+        # Якщо директорія створюється, додаємо відповідний рядок
+        dir_msg = f"Created log directory: {LOG_DIR}\n"
+
+    # 2. Додаємо повідомлення про очікування
+    wait_msg = f"*** Waiting for connection on {listen_host}:{port} ***\n"
+
+    SYSTEM_MESSAGES_PREFIX = dir_msg + wait_msg
+
+    # Повертаємо рядки для виводу на консоль
+    return dir_msg.strip(), wait_msg.strip()
+# --- КІНЕЦЬ НОВОЇ ФУНКЦІЇ ---
+
 
 def get_current_time_ms():
     """Returns the current time in [yyyy-mm-dd HH:MM:SS.mmm] format."""
@@ -82,13 +112,12 @@ def write_to_all_log(log_entry):
 def write_to_type_log(type_frame_hex, payload_hex, payload_bytes, crc_status_message=None):
     """
     Writes the Payload to the type_{typeFrame}.log file.
-    NEW RULE: Explicit exception for A2 and D0 (do not create a log file).
+    Writes SYSTEM_MESSAGES_PREFIX only on the first entry for C1/C0.
     """
     # CORRECTED RULE: Explicit exception for A2 and D0.
     if type_frame_hex == "A2" or type_frame_hex == "D0":
         return
 
-    # This remains as an old requirement, but now it only applies to C1 and C0.
     # (If Payload is empty, do not log.)
     if len(payload_bytes) == 0:
         return
@@ -103,7 +132,6 @@ def write_to_type_log(type_frame_hex, payload_hex, payload_bytes, crc_status_mes
     log_line = f"{get_current_time_ms()} {payload_hex}"
 
     decoded = None
-    # ... (A2 and D0 are excluded from logging to files)
     if type_frame_hex == "C1":
         decoded = decode_c1_payload(payload_bytes)
     elif type_frame_hex == "C0":
@@ -117,9 +145,21 @@ def write_to_type_log(type_frame_hex, payload_hex, payload_bytes, crc_status_mes
     if crc_status_message:
         log_line += "\n" + crc_status_message + "\n"
 
+    # --- НОВИЙ БЛОК: Додавання префіксу при першому записі ---
+    content_to_write = ""
+    # Якщо це перший запис для цього типу (C1 або C0)
+    if type_frame_hex in ["C1", "C0"] and type_frame_hex not in last_payloads:
+        # Додаємо глобальний префікс (який вже містить повідомлення про підключення)
+        if SYSTEM_MESSAGES_PREFIX:
+            # Використовуємо rstrip() для видалення кінцевого '\n' перед додаванням нового логу
+            content_to_write += SYSTEM_MESSAGES_PREFIX.rstrip() + "\n\n"
+
+    content_to_write += log_line + "\n"
+    # --- КІНЕЦЬ НОВОГО БЛОКУ ---
+
     # Write to file
     with open(file_path, 'a', encoding='utf-8') as f:
-        f.write(log_line + "\n")
+        f.write(content_to_write)
 
     # Update last payload
     last_payloads[type_frame_hex] = payload_hex
@@ -135,12 +175,10 @@ def parse_and_process_data(buffer):
 
     # 1. Search and extract packets
     while True:
-        # ... (rest of the code remains unchanged)
         start_index = buffer.find(START_SIGN, current_index)
         if start_index == -1:
             break
 
-        # ... (Code where end_index is assigned remains unchanged)
         end_index = buffer.find(START_SIGN, start_index + len(START_SIGN))
 
         if end_index == -1:
@@ -195,9 +233,11 @@ def parse_and_process_data(buffer):
             timestamp = get_current_time_ms()
             full_packet_hex = binascii.hexlify(packet).decode('utf-8').upper()
 
-            # To screen
+            # To screen (Рядок 1)
             output = f"{timestamp} {full_packet_hex}"
             print(output)
+
+
 
             # Display details and CRC information
 
@@ -214,11 +254,16 @@ def parse_and_process_data(buffer):
             # <<< CHANGE: Use id_display for ID >>>
             details = f"  TYPE: {type_frame_hex} ID: {id_display} Payload: {payload_display_details}"
 
+            # Add from C0 short info
+
             # Display full CRC status
             crc_line = f"  {crc_message}"
 
             print(details)
             print(crc_line)
+            if  type_frame_hex == "C0":
+                info_bms_message = decode_c0_bms_info_payload(payload_bytes)
+                print(info_bms_message)
 
             # To file
             all_log_entry = output + '\n' + details + '\n' + crc_line
@@ -236,7 +281,6 @@ def parse_and_process_data(buffer):
         return buffer
     else:
         # Return the part of the buffer after the last found packet
-        # ... (Here, end_index is used, which is now guaranteed to exist)
         if end_index == -1:
             return buffer[start_index:] if 'start_index' in locals() else b''
         else:
@@ -244,12 +288,19 @@ def parse_and_process_data(buffer):
 
 def main():
     """Main function to run the TCP server."""
+    listen_host = '0.0.0.0'
+
+    # 1. Створення директорії логів
     setup_logging()
 
-    # Using '0.0.0.0' to listen on all available interfaces,
-    # although the user specified 192.168.8.19 as the SAT-client.
-    # To listen on the laptop, one must specify the laptop's IP or '0.0.0.0'
-    listen_host = '0.0.0.0'
+    # 2. Збір початкових повідомлень та вивід на консоль
+    dir_msg, wait_msg = prepare_system_messages(listen_host, PORT)
+    if dir_msg:
+        print(dir_msg)
+    print(wait_msg)
+
+    # Примітка: На цьому етапі SYSTEM_MESSAGES_PREFIX містить
+    # 'Created log directory...' та '*** Waiting for connection...'
 
     try:
         # Create TCP socket
@@ -258,12 +309,22 @@ def main():
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((listen_host, PORT))
             s.listen(1) # Listen for only one client
-            print(f"*** Waiting for connection on {listen_host}:{PORT} ***")
 
             # Accept connection
             conn, addr = s.accept()
             with conn:
-                print(f"Connected to {addr}")
+                connect_msg = f"Connected to {addr}"
+                print(connect_msg)
+                print()
+
+                # --- ОНОВЛЕННЯ GLOBAL ЗМІННОЇ ТА ALL.LOG ---
+                global SYSTEM_MESSAGES_PREFIX
+                # Додаємо повідомлення про підключення до глобальної змінної
+                SYSTEM_MESSAGES_PREFIX += connect_msg + "\n"
+
+                # Записуємо ВСІ початкові системні повідомлення в all.log ОДНИМ БЛОКОМ
+                write_to_all_log(SYSTEM_MESSAGES_PREFIX.rstrip()+ "\n")
+                # --- КІНЕЦЬ ОНОВЛЕННЯ ---
 
                 # Buffer for incomplete data
                 data_buffer = b''
