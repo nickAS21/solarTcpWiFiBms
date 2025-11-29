@@ -359,7 +359,7 @@ def decode_c0_bms_info_payload(payload_bytes):
         # Розділення: 10 байтів info_raw + 4 байти error_raw
         info_raw  = info_error_data_bytes[:10]
         info_raw_hex  = binascii.hexlify(info_raw).decode().upper()
-        error_raw  = info_error_data_bytes[10:] # 4 байти коду помилки
+        error_raw  = info_error_data_bytes[10:13] # 3 байти коду помилки
         error_raw_hex  = binascii.hexlify(error_raw).decode().upper()
 
         # Розділення 10 байтів info_raw:
