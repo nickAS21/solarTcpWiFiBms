@@ -291,7 +291,7 @@ def decode_c0_payload(payload_bytes):
         # Розділення: 10 байтів info_raw + 4 байти error_raw
         info_raw  = info_error_data_bytes[:10]
         info_raw_hex  = binascii.hexlify(info_raw).decode().upper()
-        error_raw  = info_error_data_bytes[10:] # 4 байти коду помилки
+        error_raw  = info_error_data_bytes[10:13] # 4 байти коду помилки
         error_raw_hex  = binascii.hexlify(error_raw).decode().upper()
 
         # Розділення 10 байтів info_raw:
@@ -312,10 +312,10 @@ def decode_c0_payload(payload_bytes):
             f"4  | SOC (%)          | {soc} %",
             f"5  | All info Data    | {info_error_data_hex}",
             f"6  | info Data        | {info_raw_hex}",
-            f"7  | BMS status       | 0x{state_bms_raw_hex} (2B)",
-            f"8  | BMS status1      | 0x{state_bms_dop1_raw_hex} (4B)",
-            f"9  | BMS status2      | 0x{state_bms_dop2_raw_hex} (4B)",
-            f"10 | Error info Data  | {error_raw_hex} (4B)",
+            f"7  | BMS status       | 0x{state_bms_raw_hex} ({len(state_bms_raw)}B)",
+            f"8  | BMS status1      | 0x{state_bms_dop1_raw_hex} ({len(state_bms_dop1_raw)}B)",
+            f"9  | BMS status2      | 0x{state_bms_dop2_raw_hex} ({len(state_bms_dop2_raw)}B)",
+            f"10 | Error info Data  | {error_raw_hex} ({len(error_raw)}B)",
         ]
 
         # Додаємо Error_Code (4 байти) - Рядок 11
